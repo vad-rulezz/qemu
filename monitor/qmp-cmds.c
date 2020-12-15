@@ -199,13 +199,7 @@ void qmp_set_password(const char *protocol, const char *password,
         }
         rc = qemu_spice.set_passwd(password, fail_if_connected,
                                    disconnect_if_connected);
-        if (rc != 0) {
-            error_setg(errp, QERR_SET_PASSWD_FAILED);
-        }
-        return;
-    }
-
-    if (strcmp(protocol, "vnc") == 0) {
+    } else if (strcmp(protocol, "vnc") == 0) {
         if (fail_if_connected || disconnect_if_connected) {
             /* vnc supports "connected=keep" only */
             error_setg(errp, QERR_INVALID_PARAMETER, "connected");
@@ -214,13 +208,15 @@ void qmp_set_password(const char *protocol, const char *password,
         /* Note that setting an empty password will not disable login through
          * this interface. */
         rc = vnc_display_password(NULL, password);
-        if (rc < 0) {
-            error_setg(errp, QERR_SET_PASSWD_FAILED);
-        }
+    } else {
+        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "protocol",
+                   "'vnc' or 'spice'");
         return;
     }
 
-    error_setg(errp, QERR_INVALID_PARAMETER, "protocol");
+    if (rc != 0) {
+        error_setg(errp, "Could not set password");
+    }
 }
 
 void qmp_expire_password(const char *protocol, const char *whenstr,
@@ -244,28 +240,24 @@ void qmp_expire_password(const char *protocol, const char *whenstr,
             return;
         }
         rc = qemu_spice.set_pw_expire(when);
-        if (rc != 0) {
-            error_setg(errp, QERR_SET_PASSWD_FAILED);
-        }
-        return;
-    }
-
-    if (strcmp(protocol, "vnc") == 0) {
+    } else if (strcmp(protocol, "vnc") == 0) {
         rc = vnc_display_pw_expire(NULL, when);
-        if (rc != 0) {
-            error_setg(errp, QERR_SET_PASSWD_FAILED);
-        }
+    } else {
+        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "protocol",
+                   "'vnc' or 'spice'");
         return;
     }
 
-    error_setg(errp, QERR_INVALID_PARAMETER, "protocol");
+    if (rc != 0) {
+        error_setg(errp, "Could not set password expire time");
+    }
 }
 
 #ifdef CONFIG_VNC
 void qmp_change_vnc_password(const char *password, Error **errp)
 {
     if (vnc_display_password(NULL, password) < 0) {
-        error_setg(errp, QERR_SET_PASSWD_FAILED);
+        error_setg(errp, "Could not set password");
     }
 }
 
@@ -392,8 +384,9 @@ ACPIOSTInfoList *qmp_query_acpi_ospm_status(Error **errp)
 MemoryInfo *qmp_query_memory_size_summary(Error **errp)
 {
     MemoryInfo *mem_info = g_malloc0(sizeof(MemoryInfo));
+    MachineState *ms = MACHINE(qdev_get_machine());
 
-    mem_info->base_memory = ram_size;
+    mem_info->base_memory = ms->ram_size;
 
     mem_info->plugged_memory = get_plugged_memory_size();
     mem_info->has_plugged_memory =

@@ -205,8 +205,15 @@ static bool memory_region_ioeventfd_before(MemoryRegionIoeventfd *a,
 static bool memory_region_ioeventfd_equal(MemoryRegionIoeventfd *a,
                                           MemoryRegionIoeventfd *b)
 {
-    return !memory_region_ioeventfd_before(a, b)
-        && !memory_region_ioeventfd_before(b, a);
+    if (int128_eq(a->addr.start, b->addr.start) &&
+        (!int128_nz(a->addr.size) || !int128_nz(b->addr.size) ||
+         (int128_eq(a->addr.size, b->addr.size) &&
+          (a->match_data == b->match_data) &&
+          ((a->match_data && (a->data == b->data)) || !a->match_data) &&
+          (a->e == b->e))))
+        return true;
+
+    return false;
 }
 
 /* Range of memory in the global map.  Addresses are absolute. */
@@ -1935,11 +1942,16 @@ void memory_region_unregister_iommu_notifier(MemoryRegion *mr,
     memory_region_update_iommu_notify_flags(iommu_mr, NULL);
 }
 
-void memory_region_notify_one(IOMMUNotifier *notifier,
-                              IOMMUTLBEntry *entry)
+void memory_region_notify_iommu_one(IOMMUNotifier *notifier,
+                                    IOMMUTLBEvent *event)
 {
-    IOMMUNotifierFlag request_flags;
+    IOMMUTLBEntry *entry = &event->entry;
     hwaddr entry_end = entry->iova + entry->addr_mask;
+    IOMMUTLBEntry tmp = *entry;
+
+    if (event->type == IOMMU_NOTIFIER_UNMAP) {
+        assert(entry->perm == IOMMU_NONE);
+    }
 
     /*
      * Skip the notification if the notification does not overlap
@@ -1949,22 +1961,22 @@ void memory_region_notify_one(IOMMUNotifier *notifier,
         return;
     }
 
-    assert(entry->iova >= notifier->start && entry_end <= notifier->end);
-
-    if (entry->perm & IOMMU_RW) {
-        request_flags = IOMMU_NOTIFIER_MAP;
+    if (notifier->notifier_flags & IOMMU_NOTIFIER_DEVIOTLB_UNMAP) {
+        /* Crop (iova, addr_mask) to range */
+        tmp.iova = MAX(tmp.iova, notifier->start);
+        tmp.addr_mask = MIN(entry_end, notifier->end) - tmp.iova;
     } else {
-        request_flags = IOMMU_NOTIFIER_UNMAP;
+        assert(entry->iova >= notifier->start && entry_end <= notifier->end);
     }
 
-    if (notifier->notifier_flags & request_flags) {
-        notifier->notify(notifier, entry);
+    if (event->type & notifier->notifier_flags) {
+        notifier->notify(notifier, &tmp);
     }
 }
 
 void memory_region_notify_iommu(IOMMUMemoryRegion *iommu_mr,
                                 int iommu_idx,
-                                IOMMUTLBEntry entry)
+                                IOMMUTLBEvent event)
 {
     IOMMUNotifier *iommu_notifier;
 
@@ -1972,7 +1984,7 @@ void memory_region_notify_iommu(IOMMUMemoryRegion *iommu_mr,
 
     IOMMU_NOTIFIER_FOREACH(iommu_notifier, iommu_mr) {
         if (iommu_notifier->iommu_idx == iommu_idx) {
-            memory_region_notify_one(iommu_notifier, &entry);
+            memory_region_notify_iommu_one(iommu_notifier, &event);
         }
     }
 }

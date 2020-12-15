@@ -281,7 +281,13 @@ int clp_service_call(S390CPU *cpu, uint8_t r2, uintptr_t ra)
             goto out;
         }
 
-        memcpy(resquery, &pbdev->zpci_fn, sizeof(*resquery));
+        stq_p(&resquery->sdma, pbdev->zpci_fn.sdma);
+        stq_p(&resquery->edma, pbdev->zpci_fn.edma);
+        stw_p(&resquery->pchid, pbdev->zpci_fn.pchid);
+        resquery->flags = pbdev->zpci_fn.flags;
+        resquery->pfgid = pbdev->zpci_fn.pfgid;
+        stl_p(&resquery->fid, pbdev->zpci_fn.fid);
+        stl_p(&resquery->uid, pbdev->zpci_fn.uid);
 
         for (i = 0; i < PCI_BAR_COUNT; i++) {
             uint32_t data = pci_get_long(pbdev->pdev->config +
@@ -312,7 +318,13 @@ int clp_service_call(S390CPU *cpu, uint8_t r2, uintptr_t ra)
             stw_p(&resgrp->hdr.rsp, CLP_RC_QUERYPCIFG_PFGID);
             goto out;
         }
-        memcpy(resgrp, &group->zpci_group, sizeof(ClpRspQueryPciGrp));
+        resgrp->fr = group->zpci_group.fr;
+        stq_p(&resgrp->dasm, group->zpci_group.dasm);
+        stq_p(&resgrp->msia, group->zpci_group.msia);
+        stw_p(&resgrp->mui, group->zpci_group.mui);
+        stw_p(&resgrp->i, group->zpci_group.i);
+        stw_p(&resgrp->maxstbl, group->zpci_group.maxstbl);
+        resgrp->version = group->zpci_group.version;
         stw_p(&resgrp->hdr.rsp, CLP_RC_OK);
         break;
     }
@@ -590,15 +602,18 @@ static uint32_t s390_pci_update_iotlb(S390PCIIOMMU *iommu,
                                       S390IOTLBEntry *entry)
 {
     S390IOTLBEntry *cache = g_hash_table_lookup(iommu->iotlb, &entry->iova);
-    IOMMUTLBEntry notify = {
-        .target_as = &address_space_memory,
-        .iova = entry->iova,
-        .translated_addr = entry->translated_addr,
-        .perm = entry->perm,
-        .addr_mask = ~PAGE_MASK,
+    IOMMUTLBEvent event = {
+        .type = entry->perm ? IOMMU_NOTIFIER_MAP : IOMMU_NOTIFIER_UNMAP,
+        .entry = {
+            .target_as = &address_space_memory,
+            .iova = entry->iova,
+            .translated_addr = entry->translated_addr,
+            .perm = entry->perm,
+            .addr_mask = ~PAGE_MASK,
+        },
     };
 
-    if (entry->perm == IOMMU_NONE) {
+    if (event.type == IOMMU_NOTIFIER_UNMAP) {
         if (!cache) {
             goto out;
         }
@@ -611,9 +626,11 @@ static uint32_t s390_pci_update_iotlb(S390PCIIOMMU *iommu,
                 goto out;
             }
 
-            notify.perm = IOMMU_NONE;
-            memory_region_notify_iommu(&iommu->iommu_mr, 0, notify);
-            notify.perm = entry->perm;
+            event.type = IOMMU_NOTIFIER_UNMAP;
+            event.entry.perm = IOMMU_NONE;
+            memory_region_notify_iommu(&iommu->iommu_mr, 0, event);
+            event.type = IOMMU_NOTIFIER_MAP;
+            event.entry.perm = entry->perm;
         }
 
         cache = g_new(S390IOTLBEntry, 1);
@@ -625,7 +642,7 @@ static uint32_t s390_pci_update_iotlb(S390PCIIOMMU *iommu,
         dec_dma_avail(iommu);
     }
 
-    memory_region_notify_iommu(&iommu->iommu_mr, 0, notify);
+    memory_region_notify_iommu(&iommu->iommu_mr, 0, event);
 
 out:
     return iommu->dma_limit ? iommu->dma_limit->avail : 1;

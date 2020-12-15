@@ -9,11 +9,12 @@
  * directory.
  */
 
+#include "qemu/osdep.h"
+
 #include <sys/ioctl.h>
 #include <linux/vfio.h>
 #include <linux/vfio_zdev.h>
 
-#include "qemu/osdep.h"
 #include "trace.h"
 #include "hw/s390x/s390-pci-bus.h"
 #include "hw/s390x/s390-pci-clp.h"
@@ -156,12 +157,12 @@ static void s390_pci_read_group(S390PCIBusDevice *pbdev,
         if (cap->flags & VFIO_DEVICE_INFO_ZPCI_FLAG_REFRESH) {
             resgrp->fr = 1;
         }
-        stq_p(&resgrp->dasm, cap->dasm);
-        stq_p(&resgrp->msia, cap->msi_addr);
-        stw_p(&resgrp->mui, cap->mui);
-        stw_p(&resgrp->i, cap->noi);
-        stw_p(&resgrp->maxstbl, cap->maxstbl);
-        stb_p(&resgrp->version, cap->version);
+        resgrp->dasm = cap->dasm;
+        resgrp->msia = cap->msi_addr;
+        resgrp->mui = cap->mui;
+        resgrp->i = cap->noi;
+        resgrp->maxstbl = cap->maxstbl;
+        resgrp->version = cap->version;
     }
 }
 

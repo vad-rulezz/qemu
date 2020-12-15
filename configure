@@ -449,6 +449,8 @@ meson=""
 ninja=""
 skip_meson=no
 gettext=""
+fuse="auto"
+fuse_lseek="auto"
 
 bogus_os="no"
 malloc_trim="auto"
@@ -1525,6 +1527,14 @@ for opt do
   ;;
   --disable-libdaxctl) libdaxctl=no
   ;;
+  --enable-fuse) fuse="enabled"
+  ;;
+  --disable-fuse) fuse="disabled"
+  ;;
+  --enable-fuse-lseek) fuse_lseek="enabled"
+  ;;
+  --disable-fuse-lseek) fuse_lseek="disabled"
+  ;;
   *)
       echo "ERROR: unknown option $opt"
       echo "Try '$0 --help' for more information"
@@ -1850,6 +1860,8 @@ disabled with --disable-FEATURE, default is enabled if available:
   xkbcommon       xkbcommon support
   rng-none        dummy RNG, avoid using /dev/(u)random and getrandom()
   libdaxctl       libdaxctl support
+  fuse            FUSE block device export
+  fuse-lseek      SEEK_HOLE/SEEK_DATA support for FUSE exports
 
 NOTE: The object files are built at the place where configure is launched
 EOF
@@ -1862,6 +1874,10 @@ rm -f */config-devices.mak.d
 if test -z "$python"
 then
     error_exit "Python not found. Use --python=/path/to/python"
+fi
+if ! has "$make"
+then
+    error_exit "GNU make ($make) not found"
 fi
 
 # Note that if the Python conditional here evaluates True we will exit
@@ -1912,9 +1928,6 @@ fi
 
 case "$meson" in
     git | internal)
-        if ! $python -c 'import pkg_resources' > /dev/null 2>&1; then
-            error_exit "Python setuptools not found"
-        fi
         meson="$python ${source_path}/meson/meson.py"
         ;;
     *) meson=$(command -v "$meson") ;;
@@ -2317,12 +2330,6 @@ if compile_prog "" "" ; then
   l2tpv3=yes
 else
   l2tpv3=no
-fi
-
-if check_include "pty.h" ; then
-  pty_h=yes
-else
-  pty_h=no
 fi
 
 cat > $TMPC <<EOF
@@ -3095,28 +3102,6 @@ EOF
 fi
 
 ##########################################
-# getifaddrs (for tests/test-io-channel-socket )
-
-have_ifaddrs_h=yes
-if ! check_include "ifaddrs.h" ; then
-  have_ifaddrs_h=no
-fi
-
-#########################################
-# libdrm check
-have_drm_h=no
-if check_include "libdrm/drm.h" ; then
-    have_drm_h=yes
-fi
-
-#########################################
-# sys/signal.h check
-have_sys_signal_h=no
-if check_include "sys/signal.h" ; then
-  have_sys_signal_h=yes
-fi
-
-##########################################
 # VTE probe
 
 if test "$vte" != "no"; then
@@ -3505,8 +3490,15 @@ if $pkg_config --atleast-version=$glib_req_ver gio-2.0; then
     # Check that the libraries actually work -- Ubuntu 18.04 ships
     # with pkg-config --static --libs data for gio-2.0 that is missing
     # -lblkid and will give a link error.
-    write_c_skeleton
-    if compile_prog "" "$gio_libs" ; then
+    cat > $TMPC <<EOF
+#include <gio/gio.h>
+int main(void)
+{
+    g_dbus_proxy_new_sync(0, 0, 0, 0, 0, 0, 0, 0);
+    return 0;
+}
+EOF
+    if compile_prog "$gio_cflags" "$gio_libs" ; then
         gio=yes
     else
         gio=no
@@ -4410,18 +4402,6 @@ if compile_prog "" "" ; then
   syncfs=yes
 fi
 
-# check for kcov support (kernel must be 4.4+, compiled with certain options)
-kcov=no
-if check_include sys/kcov.h ; then
-    kcov=yes
-fi
-
-# check for btrfs filesystem support (kernel must be 3.9+)
-btrfs=no
-if check_include linux/btrfs.h ; then
-    btrfs=yes
-fi
-
 # Search for bswap_32 function
 byteswap_h=no
 cat > $TMPC << EOF
@@ -4825,6 +4805,13 @@ if have_backend "dtrace"; then
   trace_backend_stap="no"
   if has 'stap' ; then
     trace_backend_stap="yes"
+
+    # Workaround to avoid dtrace(1) producing a file with 'hidden' symbol
+    # visibility. Define STAP_SDT_V2 to produce 'default' symbol visibility
+    # instead. QEMU --enable-modules depends on this because the SystemTap
+    # semaphores are linked into the main binary and not the module's shared
+    # object.
+    QEMU_CFLAGS="$QEMU_CFLAGS -DSTAP_SDT_V2"
   fi
 fi
 
@@ -6113,12 +6100,6 @@ fi
 if test "$syncfs" = "yes" ; then
   echo "CONFIG_SYNCFS=y" >> $config_host_mak
 fi
-if test "$kcov" = "yes" ; then
-  echo "CONFIG_KCOV=y" >> $config_host_mak
-fi
-if test "$btrfs" = "yes" ; then
-  echo "CONFIG_BTRFS=y" >> $config_host_mak
-fi
 if test "$inotify" = "yes" ; then
   echo "CONFIG_INOTIFY=y" >> $config_host_mak
 fi
@@ -6192,20 +6173,11 @@ fi
 if test "$auth_pam" = "yes" ; then
     echo "CONFIG_AUTH_PAM=y" >> $config_host_mak
 fi
-if test "$have_ifaddrs_h" = "yes" ; then
-    echo "HAVE_IFADDRS_H=y" >> $config_host_mak
-fi
-if test "$have_drm_h" = "yes" ; then
-  echo "HAVE_DRM_H=y" >> $config_host_mak
-fi
 if test "$have_broken_size_max" = "yes" ; then
     echo "HAVE_BROKEN_SIZE_MAX=y" >> $config_host_mak
 fi
 if test "$have_openpty" = "yes" ; then
     echo "HAVE_OPENPTY=y" >> $config_host_mak
-fi
-if test "$have_sys_signal_h" = "yes" ; then
-    echo "HAVE_SYS_SIGNAL_H=y" >> $config_host_mak
 fi
 
 # Work around a system header bug with some kernel/XFS header
@@ -6671,9 +6643,6 @@ if test "$sheepdog" = "yes" ; then
   add_to deprecated_features "sheepdog"
   echo "CONFIG_SHEEPDOG=y" >> $config_host_mak
 fi
-if test "$pty_h" = "yes" ; then
-  echo "HAVE_PTY_H=y" >> $config_host_mak
-fi
 if test "$have_mlockall" = "yes" ; then
   echo "HAVE_MLOCKALL=y" >> $config_host_mak
 fi
@@ -7003,6 +6972,7 @@ NINJA=$ninja $meson setup \
         -Diconv=$iconv -Dcurses=$curses -Dlibudev=$libudev\
         -Ddocs=$docs -Dsphinx_build=$sphinx_build -Dinstall_blobs=$blobs \
         -Dvhost_user_blk_server=$vhost_user_blk_server \
+        -Dfuse=$fuse -Dfuse_lseek=$fuse_lseek \
         $cross_arg \
         "$PWD" "$source_path"
 
